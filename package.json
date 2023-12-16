@@ -18,7 +18,14 @@
   "dependencies": {
     "@ellipsis-labs/phoenix-sdk": "^2.0.2",
     "@solana/web3.js": "^1.87.6",
+    "@types/uuid": "^9.0.7",
+    "@typescript-eslint/parser": "^6.14.0",
+    "binance": "^2.8.14",
+    "ccxt": "^4.1.90",
     "dotenv": "^16.3.1",
-    "node-fetch": "^3.3.2"
+    "eslint": "^8.55.0",
+    "node-fetch": "^3.3.2",
+    "prettier": "^3.1.1",
+    "uuid": "^9.0.1"
   }
 }

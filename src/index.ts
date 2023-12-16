@@ -1,233 +1,164 @@
-import { Keypair, 
-    Connection, 
-    PublicKey,
-    Transaction,
-    sendAndConfirmTransaction,
-    TransactionInstruction,
-} from "@solana/web3.js";
+import * as ccxt from 'ccxt';
+import { OrderManager, OrderType } from './orderManagement';
+import { getConnection, getMarketAddress, getTraderKeyPair, getMarketState } from './marketUtils';
+import { calculateEMA, calculateBands, stddev } from './simple_features';
+import { PublicKey } from '@solana/web3.js';
+import * as phoenixSdk from '@ellipsis-labs/phoenix-sdk';
 
-import * as phoenixSdk from "@ellipsis-labs/phoenix-sdk"
-require('dotenv').config();
+// Constants
+const REFRESH_INTERVAL = 10000; // in milliseconds
+const EDGE = 0.01;
+const EMA_PERIOD = 10;
+const BOLLINGER_PERIOD = 20; 
+const BOLLINGER_STD_DEV_MULTIPLIER = 2;
+// Cache for storing historical prices
+const historicalCache: Candle[] = [];
+const MAX_CACHE_SIZE = 100;
 
-export const execute = async () => {
-    const REFRESH_INTERVAL = 2000; // 2 minutes
-    const MAX_ITER = 3;
-    const ORDER_LIFETIME = 7; // 7 Seconds
-    const TICKSIZE = 0.01;
-    let counter = 0;
 
-    if (!process.env.PRIVATE_KEY) {
-        throw new Error("PRIVATE_KEY is not defined");
-    }
+// Initialize the CCXT exchange
+const exchange = new ccxt.binance({
+    'enableRateLimit': true,
+});
 
-    let privKeyArray;
 
-    try {
-        privKeyArray = JSON.parse(process.env.PRIVATE_KEY);
-    } catch (err) {
-        throw new Error("PRIVATE_KEY is not a valid - must be a JSON array");
-    }
-
-    let traderKeyPair = Keypair.fromSecretKey(new Uint8Array(privKeyArray));
-    const marketPubKey = new PublicKey("4DoNfFBfF7UokCC2FQzriy7yHK6DY6NVdYpuekQ5pRgg");
-
-    const endpoint = "https://api.mainnet-beta.solana.com";
-    const connection = new Connection(endpoint, "confirmed");
-
-    const client = await phoenixSdk.Client.create(connection);
-
-    const marketState = client.marketStates.get(marketPubKey.toString());
-    const marketData = marketState?.data;
-
-    if (!marketData) {
-        throw new Error("Market data is not available");
-    }
-
-    await setupMaker(connection, marketState, traderKeyPair);
-
-    do {
-        await cancelAllOrders(connection, client, marketPubKey, traderKeyPair);
-
-        try {
-            const price = await fetchSOLPrice();
-            const { bid, ask } = calculateBidAsk(price, TICKSIZE);
-
-            console.log(`SOL price : ${price} |  bid: ${bid} | ask: ${ask}`);
-
-            const currentTime = Math.floor(Date.now() / 1000);
-
-            const bidOrderTemplate = createLimitOrderTemplate(phoenixSdk.Side.Bid, bid, currentTime, ORDER_LIFETIME);
-            const askOrderTemplate = createLimitOrderTemplate(phoenixSdk.Side.Ask, ask, currentTime, ORDER_LIFETIME);
-
-            let instructions: TransactionInstruction[] = [];
-            if (counter < MAX_ITER) {
-                instructions = [
-                    client.getLimitOrderInstructionfromTemplate(
-                        marketPubKey.toBase58(),
-                        traderKeyPair.publicKey,
-                        bidOrderTemplate,
-                    ),
-                    client.getLimitOrderInstructionfromTemplate(
-                        marketPubKey.toBase58(),
-                        traderKeyPair.publicKey,
-                        askOrderTemplate,
-                    ),
-                ];
-            }
-
-            if (counter === MAX_ITER) {
-                const withdrawParams: phoenixSdk.WithdrawParams = {
-                    quoteLotsToWithdraw: null,
-                    baseLotsToWithdraw: null,
-                };
-
-                const placeWithdraw = client.createWithdrawFundsInstruction(
-                    {
-                        withdrawFundsParams: withdrawParams,
-                    },
-                    marketPubKey.toString(),
-                    traderKeyPair.publicKey,
-                );
-                instructions.push(placeWithdraw);
-            }
-
-            await placeQuotes(connection, instructions, traderKeyPair, marketState, bid, ask);
-
-            counter += 1;
-            await delay(REFRESH_INTERVAL);
-        } catch (err) {
-            console.error(err);
-        }
-
-        counter += 1;
-        await delay(REFRESH_INTERVAL);
-    } while (counter < MAX_ITER);
+type Candle = {
+    timestamp: number;
+    close: number;
 };
 
-async function setupMaker(
-    connection: Connection, 
-    marketState: phoenixSdk.MarketState, 
-    traderKeyPair: Keypair) {
-    const setupNewMakerIxs = await phoenixSdk.getMakerSetupInstructionsForMarket(
-        connection,
-        marketState,
-        traderKeyPair.publicKey,
-    );
 
-    if (setupNewMakerIxs.length !== 0) {
-        const setup = new Transaction().add(...setupNewMakerIxs);
-        const setupTxId = await sendAndConfirmTransaction(
-            connection,
-            setup,
-            [traderKeyPair],
-            {
-                skipPreflight: false,
-                commitment: "confirmed",
-            }
-        );
-        console.log(`Setup Tx Link: https://beta.solscan.io/tx/${setupTxId}`);
-    } else {
-        console.log("Maker already setup");
+async function fetchPrice(ticker = 'SOL/USDC') {
+    const tickerData = await exchange.fetchTicker(ticker);
+    const price = parseFloat(tickerData.last?.toString() ?? "");
+
+    if (isNaN(price)) {
+        throw new Error("Fetched price is not a valid number.");
+    }
+
+    return price;
+}
+
+
+
+// Function to update the cache with new data
+function updateCache(newData: ccxt.OHLCV) {
+    historicalCache.push({
+        timestamp: newData[0] as number,
+        close: newData[4] as number
+    });
+
+    // Evict the oldest data if cache exceeds the MAX_CACHE_SIZE
+    if (historicalCache.length > MAX_CACHE_SIZE) {
+        historicalCache.shift();
     }
 }
 
-async function cancelAllOrders(
-    connection: Connection, 
-    client: phoenixSdk.Client, 
-    marketPubKey: PublicKey, 
-    traderKeyPair: Keypair) {
-    const cancelAll = client.createCancelAllOrdersInstruction(
-        marketPubKey.toString(),
-        traderKeyPair.publicKey,
-    );
-
-    try {
-        const cancelTransaction = new Transaction().add(cancelAll);
-        const txid = await sendAndConfirmTransaction(
-            connection,
-            cancelTransaction,
-            [traderKeyPair],
-            {
-                skipPreflight: false,
-                commitment: "confirmed",
-            }
-        );
-
-        console.log(`Cancel Tx Link: https://beta.solscan.io/tx/${txid}`);
-    } catch (err) {
-        console.error(err);
-        return;
+// Function to watch and update OHLCV data
+async function watchMarketData(exchange: ccxt.Exchange, symbol: string, timeframe: string) {
+    if (!exchange.has['watchOHLCV']) {
+        throw new Error('watchOHLCV not supported for this exchange');
     }
-}
 
-async function fetchSOLPrice() {
-    const response = await fetch(
-        "https://api.coinbase.com/v2/prices/SOL-USD/spot"
-    );
-    const data: any = await response.json();
-    return parseFloat(data?.data?.amount ?? "");
-}
-
-function createLimitOrderTemplate(
-    side: phoenixSdk.Side,
-    price: number,
-    currentTime: number, 
-    orderLifetime: number): phoenixSdk.LimitOrderTemplate {
-    return {
-        side,
-        priceAsFloat: price,
-        sizeInBaseUnits: 1,
-        selfTradeBehavior: phoenixSdk.SelfTradeBehavior.Abort,
-        clientOrderId: 1,
-        useOnlyDepositedFunds: false,
-        lastValidSlot: undefined,
-        lastValidUnixTimestampInSeconds: currentTime + orderLifetime,
-    };
-}
-
-async function placeQuotes(
-    connection: Connection, 
-    instructions: TransactionInstruction[], 
-    traderKeyPair: Keypair, 
-    marketState: phoenixSdk.MarketState,
-    bid: number,
-    ask: number) {
-
-    const placeQuotesTx = new Transaction().add(...instructions);
-
-    const placeQuotesTxId = await sendAndConfirmTransaction(
-        connection,
-        placeQuotesTx,
-        [traderKeyPair],
-        {
-            skipPreflight: true,
-            commitment: "confirmed",
+    while (true) {
+        try {
+            const candles = await exchange.watchOHLCV(symbol, timeframe);
+            for (const candle of candles) {
+                updateCache(candle);
+            }
+        } catch (error) {
+            console.error('Error in watchMarketData:', error);
         }
-    );
-
-    console.log(
-        "Place quotes",
-        bid.toFixed(marketState.getPriceDecimalPlaces()),
-        "@",
-        ask.toFixed(marketState.getPriceDecimalPlaces())
-    );
-
-    console.log(`Place Quotes Tx Link: https://beta.solscan.io/tx/${placeQuotesTxId}`);
+    }
 }
 
-function calculateBidAsk(price: number, tickSize: number): { bid: number, ask: number } {
-    const bps = 250 / 10000;
 
-    let bid = price * (1 - bps);
-    let ask = price * (1 + bps);
+async function loop() {
+    const connection = getConnection();
+    const marketAddress = getMarketAddress();
+    const traderKeyPair = getTraderKeyPair();
+    const marketPubKey = new PublicKey(marketAddress);
+    const marketState = await getMarketState(connection, marketAddress);
+    const client = await phoenixSdk.Client.create(connection);
+    const orderManager = new OrderManager(connection, client, marketPubKey, traderKeyPair);
 
-    bid = Math.floor(bid / tickSize) * tickSize;
-    ask = Math.ceil(ask / tickSize) * tickSize;
+    while (true) {
+        try {
+            watchMarketData(exchange, 'SOL/USDC', '1m');
+            // Fetch the latest price and calculate technical indicators
+            const price = await fetchPrice(); 
+            const historicalPrices = historicalCache.map(candle => candle.close);
+            const ema = calculateEMA(historicalPrices, EMA_PERIOD);
+            const bollingerBands = calculateBands(historicalPrices, BOLLINGER_PERIOD, BOLLINGER_STD_DEV_MULTIPLIER);
 
-    return { bid, ask };
+
+            // Calculate bid and ask prices based on EMA and Bollinger Bands
+            const bidPrice = adjustPrice(price?? - EDGE, ema[ema.length - 1], bollingerBands, true);
+            const askPrice = adjustPrice(price?? + EDGE, ema[ema.length - 1], bollingerBands, false);
+
+            // Calculate volatility and adjust order size accordingly
+            const volatility = calculateVolatility(historicalPrices);
+            const orderSize = tweakSize(volatility);
+
+            // Submit bid and ask orders
+            await orderManager.createAndSubmitOrder({
+                type: OrderType.Limit,
+                side: phoenixSdk.Side.Bid,
+                price: bidPrice,
+                size: orderSize,
+            });
+            await orderManager.createAndSubmitOrder({
+                type: OrderType.Limit,
+                side: phoenixSdk.Side.Ask,
+                price: askPrice,
+                size: orderSize,
+            });
+
+
+            await orderManager.tp(price, bollingerBands.upperBand[bollingerBands.upperBand.length - 1]);
+            await orderManager.adjustInventory(price, bollingerBands.lowerBand[bollingerBands.lowerBand.length - 1]);
+
+            console.log(`Market Making: Bid @ ${bidPrice}, Ask @ ${askPrice}, Size: ${orderSize}`);
+        } catch (error) {
+            console.error('Market making loop error:', error);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, REFRESH_INTERVAL));
+    }
 }
 
-export const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
+function adjustPrice(price: number, ema: number, bollingerBands: { upperBand: number[], lowerBand: number[] }, isBid: boolean): number {
+    const currentBollingerUpper = bollingerBands.upperBand[bollingerBands.upperBand.length - 1];
+    const currentBollingerLower = bollingerBands.lowerBand[bollingerBands.lowerBand.length - 1];
 
-execute();
+    if (price > currentBollingerUpper) {
+        // Overbought condition
+        return isBid ? price : price - EDGE; // Lower ask price, keep bid price
+    } else if (price < currentBollingerLower) {
+        // Oversold condition
+        return isBid ? price + EDGE : price; // Increase bid price, keep ask price
+    } else if (price > ema) {
+        // Price is above EMA, the market might be bullish
+        return isBid ? price + EDGE * 0.5 : price - EDGE * 0.5; // Slightly adjust prices
+    } else if (price < ema) {
+        // Price is below EMA, the market might be bearish
+        return isBid ? price + EDGE * 0.5 : price - EDGE * 0.5; // Slightly adjust prices
+    } else {
+        return price; // Keep the original price
+    }
+}
 
+function calculateVolatility(prices: number[]): number {
+    // Calculate volatility using standard deviation
+    const stdDev = stddev(prices, prices.length);
+    const volatility = stdDev[stdDev.length - 1];
+    return volatility;
+}
+
+function tweakSize(volatility: number): number {
+    // Tweak order size based on volatility
+    const orderSize = 1 / volatility;
+    return orderSize;
+}
+// Start the market making loop
+loop();
