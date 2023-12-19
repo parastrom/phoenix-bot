@@ -97,10 +97,6 @@ export class OrderManager {
 			status: OrderStatus.Created,
 		};
 
-		if (!this.validateOrder(order)) {
-			throw new Error("Order Validation Failed");
-		}
-
 		this.orders.set(order.id, order);
 
 		const orderTemplate = this.createOrderTemplate(order);
@@ -268,7 +264,9 @@ export class OrderManager {
         }
     }
 
-
+	getInventory() {
+		return this.inventory;
+	}
 
     private calculateSellSize() {
         return Math.min(this.inventory / 2, this.MAX_THRESHOLD - this.inventory);

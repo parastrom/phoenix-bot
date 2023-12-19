@@ -12,6 +12,12 @@ Small mm bot for trading the PhoenixTrade dex.  Via SDK and web3.js library for 
 - **Simple Order Sizing**: Adjusts order size using market volatility.
 - **Inventory Management**: Manages trader inventory.
 
+## TODO
+
+- **Bundle transactions** - compute fees +  slight obfuscation of intent + needed for multistep instructions.
+- **Targeted Order Cancellation** - better order cancelling
+- **Instruction support** Better support for instructions available from the sdk
+
 ## Setup and Installation
 
 1. **Clone the Repository**:

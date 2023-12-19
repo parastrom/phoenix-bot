@@ -1,0 +1,26 @@
+{
+    "address": "CS2H8nbAVVEUHWPF5extCSymqheQdkd4d7thik6eet9N",
+    "base_ticker": "SOL",
+    "quote_ticker": "USDC",
+    "base_pubkey": "B1sL3zxwyVnDGzRWCAsBkjL23wyu8HgwQP4XxgnHiSrv",
+    "quote_pubkey": "DK1gsSV2EubSE5S5FdXHpGzw2cAJNVzxeXRmAfxAMpU5",
+    "base_lot_size_units": 0.001,
+    "quote_lot_size_units": 0.00001,
+    "tick_size": 0.01,
+    "tokens": {
+        "B1sL3zxwyVnDGzRWCAsBkjL23wyu8HgwQP4XxgnHiSrv": {
+                "address": "B1sL3zxwyVnDGzRWCAsBkjL23wyu8HgwQP4XxgnHiSrv",
+                "decimals": 9,
+                "name": "Solana",
+                "symbol": "SOL",
+                "mint": "So11111111111111111111111111111111111111112"
+            },
+        "DK1gsSV2EubSE5S5FdXHpGzw2cAJNVzxeXRmAfxAMpU5": {
+                "address": "DK1gsSV2EubSE5S5FdXHpGzw2cAJNVzxeXRmAfxAMpU5",
+                "decimals": 6,
+                "name": "USDC",
+                "symbol": "USDC",
+                "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        }
+    }
+}

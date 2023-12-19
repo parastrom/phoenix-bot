@@ -1,7 +1,7 @@
 import * as beet from "@metaplex-foundation/beet"
 import * as phoenixSdk  from "@ellipsis-labs/phoenix-sdk";
 import { Connection, PublicKey, Keypair } from '@solana/web3.js';
-
+require('dotenv').config();
 
 interface TokenConfig {
     address: string;
@@ -22,7 +22,6 @@ interface MarketConfig {
     tick_size: number;
     tokens: { [key: string]: TokenConfig };
 }
-
 
 const config: MarketConfig = require("./pools/dev_SOL_USDC.json");
 
@@ -69,6 +68,11 @@ export function lotsToBaseUnits(baseLots: beet.bignum): number {
 // Convert ticks to price using the formula: Price = Ticks * Tick Size / Quote Lot Size Units
 export function ticksToPrice(ticks: beet.bignum): number {
     return phoenixSdk.toNum(ticks) * TICK_SIZE / QUOTE_LOT_SIZE_UNITS;
+}
+
+// Convert price to ticks using the formula: Ticks = Price * Quote Lot Size Units / Tick Size
+export function priceToTicks(price: number): number {
+    return price * QUOTE_LOT_SIZE_UNITS / TICK_SIZE;
 }
 
 // Function to convert base lots to the actual size in SOL units

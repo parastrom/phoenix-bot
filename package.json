@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "npx tsc && node build"
+    "start": " npx tsc && npm run copy-config && node build",
+    "copy-config": "mkdir -p build/pools && cp src/pools/dev_SOL_USDC.json build/pools/dev_SOL_USDC.json"
   },
   "keywords": [],
   "author": "",

@@ -12,12 +12,12 @@ const EMA_PERIOD = 10;
 const BOLLINGER_PERIOD = 20; 
 const BOLLINGER_STD_DEV_MULTIPLIER = 2;
 // Cache for storing historical prices
-const historicalCache: Candle[] = [];
+let historicalCache: Candle[] = [];
 const MAX_CACHE_SIZE = 100;
 
 
 // Initialize the CCXT exchange
-const exchange = new ccxt.binance({
+const exchange = new ccxt.pro.binance({
     'enableRateLimit': true,
 });
 
@@ -28,15 +28,19 @@ type Candle = {
 };
 
 
-async function fetchPrice(ticker = 'SOL/USDC') {
-    const tickerData = await exchange.fetchTicker(ticker);
-    const price = parseFloat(tickerData.last?.toString() ?? "");
+async function fetchPrice(ticker = 'SOL/USDT') {
+    try {
+        const tickerData = await exchange.fetchTicker(ticker);
 
-    if (isNaN(price)) {
-        throw new Error("Fetched price is not a valid number.");
+        if (typeof tickerData.last === 'number') {
+            return tickerData.last;
+        } else {
+            throw new Error(`Invalid or undefined price data for ${ticker}`);
+        }
+    } catch (error) {
+        console.error(`Error fetching price for ${ticker}:`, error);
+        throw error;
     }
-
-    return price;
 }
 
 
@@ -55,20 +59,27 @@ function updateCache(newData: ccxt.OHLCV) {
 }
 
 // Function to watch and update OHLCV data
-async function watchMarketData(exchange: ccxt.Exchange, symbol: string, timeframe: string) {
+async function watchMarketData(symbol: string, timeframe: string) {
     if (!exchange.has['watchOHLCV']) {
         throw new Error('watchOHLCV not supported for this exchange');
     }
 
     while (true) {
         try {
-            const candles = await exchange.watchOHLCV(symbol, timeframe);
+            const candles = await exchange.watchOHLCV(symbol, timeframe, undefined, 20);
             for (const candle of candles) {
                 updateCache(candle);
             }
         } catch (error) {
             console.error('Error in watchMarketData:', error);
         }
+    }
+}
+
+async function fetchMarketData(symbol: string, timeframe: string) {
+    const candles = await exchange.fetchOHLCV(symbol, timeframe, undefined, 20);
+    for (const candle of candles) {
+        updateCache(candle);
     }
 }
 
@@ -81,10 +92,11 @@ async function loop() {
     const marketState = await getMarketState(connection, marketAddress);
     const client = await phoenixSdk.Client.create(connection);
     const orderManager = new OrderManager(connection, client, marketPubKey, traderKeyPair);
+    orderManager.setupMaker(marketState);
 
     while (true) {
         try {
-            watchMarketData(exchange, 'SOL/USDC', '1m');
+            await fetchMarketData('SOL/USDT', '1m');
             // Fetch the latest price and calculate technical indicators
             const price = await fetchPrice(); 
             const historicalPrices = historicalCache.map(candle => candle.close);
@@ -93,12 +105,13 @@ async function loop() {
 
 
             // Calculate bid and ask prices based on EMA and Bollinger Bands
-            const bidPrice = adjustPrice(price?? - EDGE, ema[ema.length - 1], bollingerBands, true);
-            const askPrice = adjustPrice(price?? + EDGE, ema[ema.length - 1], bollingerBands, false);
+            const bidPrice = adjustPrice(price - EDGE, ema[ema.length - 1], bollingerBands, true);
+            const askPrice = adjustPrice(price + EDGE, ema[ema.length - 1], bollingerBands, false);
 
             // Calculate volatility and adjust order size accordingly
             const volatility = calculateVolatility(historicalPrices);
-            const orderSize = tweakSize(volatility);
+            const orderSize = calculateOrderSize(volatility, price, orderManager.inventory);
+
 
             // Submit bid and ask orders
             await orderManager.createAndSubmitOrder({
@@ -155,9 +168,13 @@ function calculateVolatility(prices: number[]): number {
     return volatility;
 }
 
-function tweakSize(volatility: number): number {
-    // Tweak order size based on volatility
-    const orderSize = 1 / volatility;
+function calculateOrderSize(volatility: number, currentPrice: number, balance: number): number {
+    // Define a risk factor that is inversely proportional to the volatility
+    const riskFactor = 1 / Math.sqrt(volatility);
+
+    // Calculate the order size based on the balance, risk factor and current price
+    const orderSize = (balance * riskFactor) / currentPrice;
+
     return orderSize;
 }
 // Start the market making loop
